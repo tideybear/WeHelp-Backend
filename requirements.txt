@@ -1,0 +1,8 @@
+Flask>=3.0,<4
+flask-cors>=4.0,<6
+Flask-SQLAlchemy>=3.1,<4
+SQLAlchemy>=2.0,<3
+PyMySQL>=1.1,<2
+gunicorn>=22.0,<24
+Werkzeug>=3.0,<4
+openpyxl>=3.1,<4
