@@ -28,11 +28,12 @@ class Config:
     MYSQL_PORT = int(_env('MYSQL_PORT', '3306') or '3306')
     MYSQL_USER = _env('MYSQL_USER', 'root')
     MYSQL_PASSWORD = _env('MYSQL_PASSWORD', '')
-    MYSQL_DB = _env('MYSQL_DB', 'hhp')
+    MYSQL_DB = _env('MYSQL_DB', '')
 
+    _db_part = f'/{MYSQL_DB}' if MYSQL_DB else ''
     SQLALCHEMY_DATABASE_URI = (
         f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}'
-        f'@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}?charset=utf8mb4'
+        f'@{MYSQL_HOST}:{MYSQL_PORT}{_db_part}?charset=utf8mb4'
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
