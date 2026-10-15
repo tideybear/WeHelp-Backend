@@ -15,6 +15,7 @@ from services.project import project_app
 from services.purchase import purchase_app
 from services.sales import sales_app
 from services.user import user_app
+from services.login import login_app
 from services.view import view_app
 from utils.db_utils import DatabaseManager
 
@@ -37,6 +38,7 @@ def create_app() -> Flask:
 
     app.register_blueprint(menu_app)
     app.register_blueprint(user_app)
+    app.register_blueprint(login_app)
     app.register_blueprint(order_app)
     app.register_blueprint(namespace_app)
     app.register_blueprint(project_app)

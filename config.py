@@ -46,6 +46,7 @@ class Config:
         'connect_args': {
             'charset': 'utf8mb4',
             'use_unicode': True,
+            'connect_timeout': 10,
         },
     }
 

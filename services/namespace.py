@@ -30,7 +30,7 @@ def get_namespaceList():
             (
                 SELECT namespace_id
                     ,data_authorize_lv
-                FROM namespace_authorize 
+                FROM user_namespace_authorize 
                 WHERE user_id = :userid
             )t2
             ON t1.id = t2.namespace_id

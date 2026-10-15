@@ -50,7 +50,7 @@ def get_userList():
             return jsonify({'code': 400, 'msg': '缺少必要参数namespace_id'}), 400
         sql = """
             SELECT u.id, u.name, u.account, na.data_authorize_lv,na.is_finance_professional
-            FROM namespace_authorize na
+            FROM user_namespace_authorize na
             INNER JOIN `user` u ON u.id = na.user_id
             WHERE na.namespace_id = :namespace_id
               AND na.is_deleted = 0

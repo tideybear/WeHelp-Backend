@@ -29,8 +29,8 @@ def get_menuList():
                 t1.menu_sort
             FROM
             (
-                SELECT menu_authorize_id, menu_sort
-                FROM menu_authorize
+                SELECT menu_id, menu_sort
+                FROM user_namespace_menu_authorize
                 WHERE namespace_id = :namespace_id
                 AND user_id = :user_id
             ) t1
@@ -38,7 +38,7 @@ def get_menuList():
             (
                 SELECT * FROM menu
             ) t2
-            ON t1.menu_authorize_id = t2.id
+            ON t1.menu_id = t2.id
             ORDER BY t1.menu_sort
         """
 
@@ -67,6 +67,7 @@ def get_menuList():
                     "title": row.get("menu_name") or "",
                     "icon": row.get("icon") or ""
                 },
+                "remark": row.get("remark"),
                 "children": []
             }
             node_map[row.get("id")] = {
