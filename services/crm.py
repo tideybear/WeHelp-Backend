@@ -115,4 +115,18 @@ def update_customer(id):
     return jsonify({'result': {'id': id}})
 
 
+@crm_app.route('/contacts', methods=['GET'])
+def get_customer_contacts():
+    """获取客户联系人列表"""
+    customer_id = request.args.get('customer_id')
+    if not customer_id:
+        return jsonify({'message': '缺少 customer_id'}), 400
+
+    rows = current_app.db_manager.execute_query(
+        "SELECT * FROM v_crm_contacts WHERE customer_id = :customer_id AND is_deleted = 0 ORDER BY is_primary DESC, id",
+        {'customer_id': customer_id}
+    )
+    return jsonify({'result': {'list': rows, 'total': len(rows)}})
+
+
 __all__ = ['crm_app']
