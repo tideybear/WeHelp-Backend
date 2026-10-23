@@ -1,6 +1,45 @@
+from datetime import datetime, date, timezone
+from email.utils import parsedate_to_datetime
+
 from flask import Blueprint, request, jsonify, current_app
 
 crm_app = Blueprint('crm', __name__, url_prefix='/crm')
+
+# 联系人可更新字段白名单
+CONTACT_UPDATABLE_FIELDS = {
+    'customer_id', 'name', 'title', 'department', 'gender', 'phone', 'mobile',
+    'email', 'wechat', 'whatsapp', 'linkedin', 'language', 'is_primary',
+    'birthday', 'notes',
+}
+
+
+def _normalize_datetime(value, date_only=False):
+    """把各种日期格式统一成 MySQL 可接受的格式"""
+    if value in (None, ''):
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.strftime('%Y-%m-%d') if date_only else value.strftime('%Y-%m-%d %H:%M:%S')
+
+    text = str(value).strip()
+    # RFC 2822，如 'Tue, 12 Mar 1985 00:00:00 GMT'
+    try:
+        parsed = parsedate_to_datetime(text)
+        if parsed is not None:
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed.strftime('%Y-%m-%d') if date_only else parsed.strftime('%Y-%m-%d %H:%M:%S')
+    except (TypeError, ValueError):
+        pass
+
+    # ISO 8601 等
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d'):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.strftime('%Y-%m-%d') if date_only else parsed.strftime('%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            continue
+
+    return text
 
 
 @crm_app.route('/list', methods=['GET'])
@@ -117,16 +156,66 @@ def update_customer(id):
 
 @crm_app.route('/contacts', methods=['GET'])
 def get_customer_contacts():
-    """获取客户联系人列表"""
+    """获取客户联系人列表（namespace_id、customer_id 可选，传了才过滤）"""
+    namespace_id = request.args.get('namespace_id')
     customer_id = request.args.get('customer_id')
-    if not customer_id:
-        return jsonify({'message': '缺少 customer_id'}), 400
+
+    params = {}
+    # crm_contacts 自带 namespace_id，直接过滤；不能关联客户主数据，
+    # 因为存在 customer_id 为 NULL 的联系人（INNER JOIN 会漏掉）
+    where = ["c.is_deleted = 0"]
+
+    if customer_id:
+        params['customer_id'] = customer_id
+        where.append("c.customer_id = :customer_id")
+    if namespace_id:
+        params['namespace_id'] = namespace_id
+        where.append("c.namespace_id = :namespace_id")
 
     rows = current_app.db_manager.execute_query(
-        "SELECT * FROM v_crm_contacts WHERE customer_id = :customer_id AND is_deleted = 0 ORDER BY is_primary DESC, id",
-        {'customer_id': customer_id}
+        f"""
+        SELECT c.*
+        FROM v_crm_contacts c
+        WHERE {' AND '.join(where)}
+        ORDER BY c.is_primary DESC, c.id
+        """,
+        params
     )
     return jsonify({'result': {'list': rows, 'total': len(rows)}})
+
+
+@crm_app.route('/contacts/delete/<int:id>', methods=['DELETE'])
+def delete_customer_contact(id):
+    """删除客户联系人（软删除）"""
+    rowcount = current_app.db_manager.execute_update(
+        "UPDATE crm_contacts SET is_deleted = 1 WHERE id = :id",
+        {'id': id}
+    )
+    if rowcount == 0:
+        return jsonify({'message': '联系人不存在'}), 404
+    return jsonify({'result': {'id': id}})
+
+
+@crm_app.route('/contacts/update/<int:id>', methods=['PUT'])
+def update_customer_contact(id):
+    """更新客户联系人"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': '请提供更新数据'}), 400
+
+    # 只允许更新白名单字段
+    data = {k: v for k, v in data.items() if k in CONTACT_UPDATABLE_FIELDS}
+    if not data:
+        return jsonify({'message': '没有有效字段需要更新'}), 400
+
+    # 日期字段标准化（前端可能传 RFC 2822 / ISO 格式）
+    if 'birthday' in data:
+        data['birthday'] = _normalize_datetime(data['birthday'], date_only=True)
+
+    success = current_app.db_manager.update_by_id('crm_contacts', id, data)
+    if not success:
+        return jsonify({'message': '联系人不存在'}), 404
+    return jsonify({'result': {'id': id}})
 
 
 @crm_app.route('/follow-up-records', methods=['GET'])
