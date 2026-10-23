@@ -12,6 +12,34 @@ CONTACT_UPDATABLE_FIELDS = {
     'birthday', 'notes',
 }
 
+# 联系人可写入字段白名单（新增时额外允许 namespace_id）
+CONTACT_WRITABLE_FIELDS = CONTACT_UPDATABLE_FIELDS | {'namespace_id'}
+
+# 跟进记录可写入字段白名单（对应 crm_follow_up_records 基表 / v_crm_follow_up_records 视图）
+FOLLOW_UP_WRITABLE_FIELDS = {
+    'namespace_id', 'customer_id', 'contact_id', 'follow_up_at', 'follow_up_type_id',
+    'content', 'result', 'follow_up_status_id', 'next_follow_up_at', 'owner_id',
+    'inquiry_id', 'direction', 'channel', 'subject', 'message_body', 'language',
+    'related_product_id', 'related_quote_id', 'priority', 'next_action',
+    'external_message_id',
+}
+
+# 跟进记录可更新字段白名单（namespace_id 不允许变更，避免跨空间串数据）
+FOLLOW_UP_UPDATABLE_FIELDS = FOLLOW_UP_WRITABLE_FIELDS - {'namespace_id'}
+
+# 跟进记录 datetime 字段
+FOLLOW_UP_DATETIME_FIELDS = ('follow_up_at', 'next_follow_up_at')
+
+# 客户产品/需求可写入字段白名单
+CUSTOMER_PRODUCT_WRITABLE_FIELDS = {
+    'namespace_id', 'customer_id', 'product_name', 'product_category', 'spec',
+    'demand_desc', 'quantity', 'unit', 'target_price', 'currency', 'stage',
+    'remark',
+}
+
+# 客户产品/需求可更新字段白名单
+CUSTOMER_PRODUCT_UPDATABLE_FIELDS = CUSTOMER_PRODUCT_WRITABLE_FIELDS - {'namespace_id'}
+
 
 def _normalize_datetime(value, date_only=False):
     """把各种日期格式统一成 MySQL 可接受的格式"""
@@ -184,6 +212,42 @@ def get_customer_contacts():
     return jsonify({'result': {'list': rows, 'total': len(rows)}})
 
 
+@crm_app.route('/contacts/create', methods=['POST'])
+def create_customer_contact():
+    """新增客户联系人"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': '请提供联系人数据'}), 400
+
+    # 只保留可写字段
+    data = {k: v for k, v in data.items() if k in CONTACT_WRITABLE_FIELDS}
+    if not data:
+        return jsonify({'message': '没有有效字段需要写入'}), 400
+
+    if not data.get('name'):
+        return jsonify({'message': '缺少必填字段: name'}), 400
+
+    # 日期标准化
+    if 'birthday' in data:
+        data['birthday'] = _normalize_datetime(data['birthday'], date_only=True)
+
+    # namespace_id：优先取传入值，否则按客户反查
+    namespace_id = data.pop('namespace_id', None)
+    if not namespace_id and data.get('customer_id'):
+        rows = current_app.db_manager.execute_query(
+            "SELECT namespace_id FROM v_crm_master_data WHERE id = :customer_id LIMIT 1",
+            {'customer_id': data['customer_id']}
+        )
+        if rows:
+            namespace_id = rows[0].get('namespace_id')
+    if namespace_id:
+        data['namespace_id'] = namespace_id
+
+    data['is_deleted'] = 0
+    new_id = current_app.db_manager.insert_one('crm_contacts', data)
+    return jsonify({'result': {'id': new_id}}), 201
+
+
 @crm_app.route('/contacts/delete/<int:id>', methods=['DELETE'])
 def delete_customer_contact(id):
     """删除客户联系人（软删除）"""
@@ -220,71 +284,244 @@ def update_customer_contact(id):
 
 @crm_app.route('/follow-up-records', methods=['GET'])
 def get_follow_up_records():
-    """获取跟进记录列表"""
+    """获取跟进记录列表（namespace_id、customer_id、contact_id 可选，传了才过滤）"""
+    namespace_id = request.args.get('namespace_id')
     customer_id = request.args.get('customer_id')
-    if not customer_id:
-        return jsonify({'message': '缺少 customer_id'}), 400
+    contact_id = request.args.get('contact_id')
+    owner_id = request.args.get('owner_id')
+    follow_up_status_id = request.args.get('follow_up_status_id')
+    follow_up_type_id = request.args.get('follow_up_type_id')
+    channel = request.args.get('channel')
 
     page = request.args.get('page', 1, type=int)
     page_size = request.args.get('pageSize', 20, type=int)
 
+    params = {}
+    where = ["is_deleted = 0"]
+
+    if customer_id:
+        params['customer_id'] = customer_id
+        where.append("customer_id = :customer_id")
+    if namespace_id:
+        params['namespace_id'] = namespace_id
+        where.append("namespace_id = :namespace_id")
+    if contact_id:
+        params['contact_id'] = contact_id
+        where.append("contact_id = :contact_id")
+    if owner_id:
+        params['owner_id'] = owner_id
+        where.append("owner_id = :owner_id")
+    if follow_up_status_id:
+        params['follow_up_status_id'] = follow_up_status_id
+        where.append("follow_up_status_id = :follow_up_status_id")
+    if follow_up_type_id:
+        params['follow_up_type_id'] = follow_up_type_id
+        where.append("follow_up_type_id = :follow_up_type_id")
+    if channel:
+        params['channel'] = channel
+        where.append("channel = :channel")
+
+    where_sql = ' AND '.join(where)
+
     total = current_app.db_manager.execute_query(
-        "SELECT COUNT(*) as total FROM v_crm_follow_up_records WHERE customer_id = :customer_id AND is_deleted = 0",
-        {'customer_id': customer_id}
+        f"SELECT COUNT(*) as total FROM v_crm_follow_up_records WHERE {where_sql}", params
     )[0]['total']
 
+    params['limit'], params['offset'] = page_size, (page - 1) * page_size
     rows = current_app.db_manager.execute_query(
-        "SELECT * FROM v_crm_follow_up_records WHERE customer_id = :customer_id AND is_deleted = 0 ORDER BY follow_up_at DESC LIMIT :limit OFFSET :offset",
-        {'customer_id': customer_id, 'limit': page_size, 'offset': (page - 1) * page_size}
+        f"""
+        SELECT *
+        FROM v_crm_follow_up_records
+        WHERE {where_sql}
+        ORDER BY follow_up_at DESC, id DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        params
     )
 
-    return jsonify({'result': {'list': rows, 'total': total, 'page': page, 'pageSize': page_size}})
+    return jsonify({
+        'result': {
+            'list': rows,
+            'total': total,
+            'page': page,
+            'pageSize': page_size,
+        }
+    })
 
 
-@crm_app.route('/follow-up-records', methods=['POST'])
+@crm_app.route('/follow-up-records/<int:id>', methods=['GET'])
+def get_follow_up_record_detail(id):
+    """获取跟进记录详情"""
+    rows = current_app.db_manager.execute_query(
+        "SELECT * FROM v_crm_follow_up_records WHERE id = :id AND is_deleted = 0 LIMIT 1",
+        {'id': id}
+    )
+    if not rows:
+        return jsonify({'message': '跟进记录不存在'}), 404
+    return jsonify({'result': rows[0]})
+
+
+@crm_app.route('/follow-up-records/create', methods=['POST'])
 def create_follow_up_record():
     """创建跟进记录"""
     data = request.get_json()
     if not data:
         return jsonify({'message': '请提供跟进记录数据'}), 400
 
+    # 只保留可写字段
+    data = {k: v for k, v in data.items() if k in FOLLOW_UP_WRITABLE_FIELDS}
+    if not data:
+        return jsonify({'message': '没有有效字段需要写入'}), 400
+
     for field in ['customer_id', 'follow_up_at']:
         if not data.get(field):
             return jsonify({'message': f'缺少必填字段: {field}'}), 400
 
-    data.setdefault('is_deleted', 0)
+    # 日期字段标准化（前端可能传 RFC 2822 / ISO 格式）
+    for field in FOLLOW_UP_DATETIME_FIELDS:
+        if field in data:
+            data[field] = _normalize_datetime(data[field])
+
+    # namespace_id：优先取传入值，否则按客户反查
+    namespace_id = data.pop('namespace_id', None)
+    if not namespace_id:
+        rows = current_app.db_manager.execute_query(
+            "SELECT namespace_id FROM v_crm_master_data WHERE id = :customer_id LIMIT 1",
+            {'customer_id': data['customer_id']}
+        )
+        if rows:
+            namespace_id = rows[0].get('namespace_id')
+    if namespace_id:
+        data['namespace_id'] = namespace_id
+
+    data['is_deleted'] = 0
     new_id = current_app.db_manager.insert_one('crm_follow_up_records', data)
     return jsonify({'result': {'id': new_id}}), 201
 
 
+@crm_app.route('/follow-up-records/update/<int:id>', methods=['PUT'])
+def update_follow_up_record(id):
+    """更新跟进记录"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': '请提供更新数据'}), 400
+
+    # 只允许更新白名单字段
+    data = {k: v for k, v in data.items() if k in FOLLOW_UP_UPDATABLE_FIELDS}
+    if not data:
+        return jsonify({'message': '没有有效字段需要更新'}), 400
+
+    # 日期字段标准化
+    for field in FOLLOW_UP_DATETIME_FIELDS:
+        if field in data:
+            data[field] = _normalize_datetime(data[field])
+
+    success = current_app.db_manager.update_by_id('crm_follow_up_records', id, data)
+    if not success:
+        return jsonify({'message': '跟进记录不存在'}), 404
+    return jsonify({'result': {'id': id}})
+
+
+@crm_app.route('/follow-up-records/delete/<int:id>', methods=['DELETE'])
+def delete_follow_up_record(id):
+    """删除跟进记录（软删除）"""
+    rowcount = current_app.db_manager.execute_update(
+        "UPDATE crm_follow_up_records SET is_deleted = 1 WHERE id = :id",
+        {'id': id}
+    )
+    if rowcount == 0:
+        return jsonify({'message': '跟进记录不存在'}), 404
+    return jsonify({'result': {'id': id}})
+
+
 @crm_app.route('/customer/products', methods=['GET'])
 def get_customer_products():
-    """获取客户产品/需求列表"""
+    """获取客户产品/需求列表（namespace_id、customer_id 可选，传了才过滤）"""
+    namespace_id = request.args.get('namespace_id')
     customer_id = request.args.get('customer_id')
-    if not customer_id:
-        return jsonify({'message': '缺少 customer_id'}), 400
+
+    params = {}
+    where = ["is_deleted = 0"]
+
+    if customer_id:
+        params['customer_id'] = customer_id
+        where.append("customer_id = :customer_id")
+    if namespace_id:
+        params['namespace_id'] = namespace_id
+        where.append("namespace_id = :namespace_id")
+
+    where_sql = ' AND '.join(where)
+
+    total = current_app.db_manager.execute_query(
+        f"SELECT COUNT(*) as total FROM v_crm_customer_products WHERE {where_sql}", params
+    )[0]['total']
 
     rows = current_app.db_manager.execute_query(
-        "SELECT * FROM v_crm_customer_products WHERE customer_id = :customer_id AND is_deleted = 0 ORDER BY id DESC",
-        {'customer_id': customer_id}
+        f"SELECT * FROM v_crm_customer_products WHERE {where_sql} ORDER BY id DESC",
+        params
     )
-    return jsonify({'result': {'list': rows, 'total': len(rows)}})
+    return jsonify({'result': {'list': rows, 'total': total}})
 
 
-@crm_app.route('/customer/products', methods=['POST'])
+@crm_app.route('/customer/products/create', methods=['POST'])
 def create_customer_product():
     """创建客户产品/需求"""
     data = request.get_json()
     if not data:
         return jsonify({'message': '请提供产品需求数据'}), 400
 
+    data = {k: v for k, v in data.items() if k in CUSTOMER_PRODUCT_WRITABLE_FIELDS}
+    if not data:
+        return jsonify({'message': '没有有效字段需要写入'}), 400
+
     for field in ['customer_id', 'product_name']:
         if not data.get(field):
             return jsonify({'message': f'缺少必填字段: {field}'}), 400
 
-    data.setdefault('is_deleted', 0)
-    new_id = current_app.db_manager.insert_one('v_crm_customer_products', data)
+    # namespace_id：优先取传入值，否则按客户反查
+    namespace_id = data.pop('namespace_id', None)
+    if not namespace_id:
+        rows = current_app.db_manager.execute_query(
+            "SELECT namespace_id FROM v_crm_master_data WHERE id = :customer_id LIMIT 1",
+            {'customer_id': data['customer_id']}
+        )
+        if rows:
+            namespace_id = rows[0].get('namespace_id')
+    if namespace_id:
+        data['namespace_id'] = namespace_id
+
+    data['is_deleted'] = 0
+    new_id = current_app.db_manager.insert_one('crm_customer_products', data)
     return jsonify({'result': {'id': new_id}}), 201
+
+
+@crm_app.route('/customer/products/update/<int:id>', methods=['PUT'])
+def update_customer_product(id):
+    """更新客户产品/需求"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': '请提供更新数据'}), 400
+
+    data = {k: v for k, v in data.items() if k in CUSTOMER_PRODUCT_UPDATABLE_FIELDS}
+    if not data:
+        return jsonify({'message': '没有有效字段需要更新'}), 400
+
+    success = current_app.db_manager.update_by_id('crm_customer_products', id, data)
+    if not success:
+        return jsonify({'message': '客户产品不存在'}), 404
+    return jsonify({'result': {'id': id}})
+
+
+@crm_app.route('/customer/products/delete/<int:id>', methods=['DELETE'])
+def delete_customer_product(id):
+    """删除客户产品/需求（软删除）"""
+    rowcount = current_app.db_manager.execute_update(
+        "UPDATE crm_customer_products SET is_deleted = 1 WHERE id = :id",
+        {'id': id}
+    )
+    if rowcount == 0:
+        return jsonify({'message': '客户产品不存在'}), 404
+    return jsonify({'result': {'id': id}})
 
 
 __all__ = ['crm_app']
