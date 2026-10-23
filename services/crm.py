@@ -129,4 +129,73 @@ def get_customer_contacts():
     return jsonify({'result': {'list': rows, 'total': len(rows)}})
 
 
+@crm_app.route('/follow-up-records', methods=['GET'])
+def get_follow_up_records():
+    """获取跟进记录列表"""
+    customer_id = request.args.get('customer_id')
+    if not customer_id:
+        return jsonify({'message': '缺少 customer_id'}), 400
+
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('pageSize', 20, type=int)
+
+    total = current_app.db_manager.execute_query(
+        "SELECT COUNT(*) as total FROM v_crm_follow_up_records WHERE customer_id = :customer_id AND is_deleted = 0",
+        {'customer_id': customer_id}
+    )[0]['total']
+
+    rows = current_app.db_manager.execute_query(
+        "SELECT * FROM v_crm_follow_up_records WHERE customer_id = :customer_id AND is_deleted = 0 ORDER BY follow_up_at DESC LIMIT :limit OFFSET :offset",
+        {'customer_id': customer_id, 'limit': page_size, 'offset': (page - 1) * page_size}
+    )
+
+    return jsonify({'result': {'list': rows, 'total': total, 'page': page, 'pageSize': page_size}})
+
+
+@crm_app.route('/follow-up-records', methods=['POST'])
+def create_follow_up_record():
+    """创建跟进记录"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': '请提供跟进记录数据'}), 400
+
+    for field in ['customer_id', 'follow_up_at']:
+        if not data.get(field):
+            return jsonify({'message': f'缺少必填字段: {field}'}), 400
+
+    data.setdefault('is_deleted', 0)
+    new_id = current_app.db_manager.insert_one('crm_follow_up_records', data)
+    return jsonify({'result': {'id': new_id}}), 201
+
+
+@crm_app.route('/customer/products', methods=['GET'])
+def get_customer_products():
+    """获取客户产品/需求列表"""
+    customer_id = request.args.get('customer_id')
+    if not customer_id:
+        return jsonify({'message': '缺少 customer_id'}), 400
+
+    rows = current_app.db_manager.execute_query(
+        "SELECT * FROM v_crm_customer_products WHERE customer_id = :customer_id AND is_deleted = 0 ORDER BY id DESC",
+        {'customer_id': customer_id}
+    )
+    return jsonify({'result': {'list': rows, 'total': len(rows)}})
+
+
+@crm_app.route('/customer/products', methods=['POST'])
+def create_customer_product():
+    """创建客户产品/需求"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': '请提供产品需求数据'}), 400
+
+    for field in ['customer_id', 'product_name']:
+        if not data.get(field):
+            return jsonify({'message': f'缺少必填字段: {field}'}), 400
+
+    data.setdefault('is_deleted', 0)
+    new_id = current_app.db_manager.insert_one('v_crm_customer_products', data)
+    return jsonify({'result': {'id': new_id}}), 201
+
+
 __all__ = ['crm_app']
