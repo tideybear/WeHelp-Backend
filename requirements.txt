@@ -1,11 +1,26 @@
+# Web 框架
 Flask>=3.0,<4
 flask-cors>=4.0,<6
 Flask-SQLAlchemy>=3.1,<4
 SQLAlchemy>=2.0,<3
-PyMySQL>=1.1,<2
-gunicorn>=22.0,<24
 Werkzeug>=3.0,<4
+gunicorn>=22.0,<24
+
+# 数据库
+PyMySQL>=1.1,<2
+
+# Excel / 表格处理
 openpyxl>=3.1,<4
+
+# AI 模型调用（DeepSeek，走 OpenAI 兼容接口）
+openai>=1.0,<4
+requests>=2.31,<3
+
+# OCR 与图片处理（utils/inquiry_analysis.py）
+paddleocr>=3.0,<4
+paddlepaddle>=3.0,<4
 Pillow>=10.0
 pillow-heif>=0.16
-deep-translator>=1.11
+
+# 本地离线翻译（utils/genger_translator.py）
+argostranslate>=1.9
