@@ -544,6 +544,7 @@ ANALYSIS_FIELDS = (
     ('country', '国家/地区', 'Country or region', '公司总部所在的国家或地区，写英文国名'),
     ('country_cn', '国家/地区（中文）', 'Country or region in Chinese', '同一国家的中文名，如 英国'),
     ('region', '所属地区', 'region', '东亚、东南亚、南亚、西欧等划分'),
+    ('city', '所属城市', 'city', '调查后的城市，如果没有则留空'),
     ('address', '总部地址', 'Headquarters address', '公司注册地址或总部办公地址'),
     ('founded_year', '成立年份', 'Year founded', '公司成立年份，只写 4 位数字'),
     ('industry', '所属行业', 'Industry', '主营业务所属行业，如电气设备批发、建筑材料等'),
