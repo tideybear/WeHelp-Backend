@@ -16,11 +16,11 @@ openpyxl>=3.1,<4
 openai>=1.0,<4
 requests>=2.31,<3
 
-# OCR 与图片处理（utils/inquiry_analysis.py）
-paddleocr>=3.0,<4
-paddlepaddle>=3.0,<4
+# 图片处理
 Pillow>=10.0
 pillow-heif>=0.16
 
-# 本地离线翻译（utils/genger_translator.py）
-argostranslate>=1.9
+# 说明：OCR（paddleocr/paddlepaddle）与离线翻译（argostranslate）体积较大，
+# 且只被独立脚本 utils/inquiry_analysis.py、utils/genger_translator.py 使用，
+# 服务本身不依赖，已拆分到 requirements-extra.txt，按需安装：
+#   pip install -r requirements-extra.txt

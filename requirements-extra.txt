@@ -1,0 +1,18 @@
+# 可选的重依赖：OCR 与离线翻译
+# 这些只被独立脚本使用，服务本身不依赖，按需安装：
+#   pip install -r requirements-extra.txt
+#
+# 注意：服务器访问 pypi.org 很慢，建议加阿里云镜像：
+#   pip install -r requirements-extra.txt \
+#     -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+
+# OCR 与图片处理（utils/inquiry_analysis.py）
+paddleocr>=3.0,<4
+paddlepaddle>=3.0,<4
+
+# 本地离线翻译（utils/genger_translator.py）
+argostranslate>=1.9
+
+# torch 用 CPU 版，避免拉取几个 GB 的 CUDA 依赖
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.0,<3
