@@ -70,9 +70,15 @@ CUSTOMER_WRITABLE_FIELDS = {
 CUSTOMER_NUMBER_FIELDS = {
     'source_id', 'region_id', 'country_id', 'customer_type_id', 'industry_id',
     'company_size_id', 'company_size_min', 'company_size_max',
-    'company_revenue', 'first_year_sales_potential', 'third_year_sales_potential',
     'follow_up_status_id', 'is_followed_up', 'has_visited', 'is_important',
     'owner_id', 'status',
+}
+
+# 新增客户时小数型字段（金额，decimal(18,2)）
+CUSTOMER_DECIMAL_FIELDS = {
+    'company_revenue',
+    'first_year_sales_potential',
+    'third_year_sales_potential',
 }
 
 # 新增客户时日期型字段（统一存 'YYYY-MM-DD'）
@@ -277,6 +283,19 @@ def _parse_customer_create_body(body):
             row_data[field] = int(raw)
         except (TypeError, ValueError):
             return None, f'{field} 必须为整数'
+
+    # 小数类字段（金额）
+    for field in CUSTOMER_DECIMAL_FIELDS:
+        if field not in body:
+            continue
+        raw = body.get(field)
+        if raw is None or str(raw).strip() == '':
+            row_data[field] = None
+            continue
+        try:
+            row_data[field] = float(raw)
+        except (TypeError, ValueError):
+            return None, f'{field} 必须为数字'
 
     if row_data.get('status') is not None and row_data['status'] not in CUSTOMER_STATUS_VALUES:
         return None, 'status 取值无效'
