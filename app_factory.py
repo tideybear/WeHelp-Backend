@@ -51,10 +51,6 @@ def create_app() -> Flask:
     app.register_blueprint(finance_payables_app)
     app.register_blueprint(finance_receivables_app)
 
-    with app.app_context():
-        from services.fin import ensure_private_account_balance_triggers_dropped
-        ensure_private_account_balance_triggers_dropped()
-
     logger.info('Flask app 初始化完成')
     return app
 
