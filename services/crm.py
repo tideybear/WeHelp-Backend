@@ -49,6 +49,38 @@ CUSTOMER_PRODUCT_WRITABLE_FIELDS = {
 # 客户产品/需求可更新字段白名单
 CUSTOMER_PRODUCT_UPDATABLE_FIELDS = CUSTOMER_PRODUCT_WRITABLE_FIELDS - {'namespace_id'}
 
+# 客户主表（新增客户写入用）
+CUSTOMER_TABLE = 'crm_master_data'
+
+# 新增客户可写入字段白名单（与 crm_master_data 的列一一对应）
+CUSTOMER_WRITABLE_FIELDS = {
+    'namespace_id', 'company_name', 'company_name_en', 'short_name',
+    'source_id', 'region_id', 'country_id', 'city',
+    'customer_type_id', 'industry_id', 'company_size_id',
+    'company_size_min', 'company_size_max',
+    'company_revenue', 'revenue_currency',
+    'website', 'customer_basic_info', 'customer_needs', 'follow_up_strategy',
+    'follow_up_status_id', 'first_cooperation_at',
+    'first_year_sales_potential', 'third_year_sales_potential', 'potential_currency',
+    'is_followed_up', 'has_visited', 'is_important',
+    'owner_id', 'status', 'remark', 'address', 'background_check',
+}
+
+# 新增客户时数值型字段（空值统一写 null，避免 MySQL 隐式转换报错）
+CUSTOMER_NUMBER_FIELDS = {
+    'source_id', 'region_id', 'country_id', 'customer_type_id', 'industry_id',
+    'company_size_id', 'company_size_min', 'company_size_max',
+    'company_revenue', 'first_year_sales_potential', 'third_year_sales_potential',
+    'follow_up_status_id', 'is_followed_up', 'has_visited', 'is_important',
+    'owner_id', 'status',
+}
+
+# 新增客户时日期型字段（统一存 'YYYY-MM-DD'）
+CUSTOMER_DATE_FIELDS = {'first_cooperation_at'}
+
+# 客户状态可选值（与前端 shared.js 的 CUSTOMER_STATUS_OPTIONS 保持一致）
+CUSTOMER_STATUS_VALUES = {1, 2, 3, 4, 5}
+
 
 def _normalize_datetime(value, date_only=False):
     """把各种日期格式统一成 MySQL 可接受的格式"""
@@ -169,6 +201,114 @@ def delete_customer(id):
     if rowcount == 0:
         return jsonify({'message': '客户不存在'}), 404
     return jsonify({'result': {'id': id}})
+
+
+def _generate_customer_no():
+    """生成客户编号：WP + 年份 + 4 位流水号，如 WP20260001。"""
+    year = datetime.now().year
+    prefix = f'WP{year}'
+    rows = current_app.db_manager.execute_query(
+        "SELECT customer_no FROM crm_master_data WHERE customer_no LIKE :prefix_like",
+        {'prefix_like': f'{prefix}%'},
+    )
+    max_seq = 0
+    for row in rows or []:
+        no = str(row.get('customer_no') or '')
+        tail = no[len(prefix):]
+        if not tail.isdigit():
+            continue
+        max_seq = max(max_seq, int(tail))
+    return f'{prefix}{max_seq + 1:04d}'
+
+
+def _parse_customer_create_body(body):
+    """把请求体整理成 crm_master_data 的可写列。
+
+    返回 (row_data, err)；err 非空时表示参数不合法。
+    """
+    if not isinstance(body, dict):
+        return None, '请求体格式不正确'
+
+    namespace_id = body.get('namespace_id')
+    if namespace_id is None or str(namespace_id).strip() == '':
+        return None, '缺少必要参数 namespace_id'
+    try:
+        ns_val = int(namespace_id)
+    except (TypeError, ValueError):
+        return None, 'namespace_id 非法'
+
+    company_name = str(body.get('company_name') or '').strip()
+    if not company_name:
+        return None, '公司名称不能为空'
+    if len(company_name) > 255:
+        return None, '公司名称不能超过 255 个字符'
+
+    row_data = {
+        'namespace_id': ns_val,
+        'company_name': company_name,
+    }
+
+    # 文本类字段：空串统一转 None，避免写入空字符串
+    text_fields = (
+        'company_name_en', 'short_name', 'city', 'website',
+        'customer_basic_info', 'customer_needs', 'follow_up_strategy',
+        'remark', 'address', 'background_check',
+    )
+    for field in text_fields:
+        if field in body:
+            row_data[field] = str(body.get(field) or '').strip() or None
+
+    # 币种：char(3)，空值交给数据库默认值
+    for field in ('revenue_currency', 'potential_currency'):
+        if field in body:
+            value = str(body.get(field) or '').strip().upper()
+            if value:
+                row_data[field] = value[:3]
+
+    # 数值类字段
+    for field in CUSTOMER_NUMBER_FIELDS:
+        if field not in body:
+            continue
+        raw = body.get(field)
+        if raw is None or str(raw).strip() == '':
+            row_data[field] = None
+            continue
+        try:
+            row_data[field] = int(raw)
+        except (TypeError, ValueError):
+            return None, f'{field} 必须为整数'
+
+    if row_data.get('status') is not None and row_data['status'] not in CUSTOMER_STATUS_VALUES:
+        return None, 'status 取值无效'
+
+    # 日期类字段
+    for field in CUSTOMER_DATE_FIELDS:
+        if field in body:
+            raw = body.get(field)
+            row_data[field] = str(raw).strip()[:10] if raw else None
+
+    return row_data, None
+
+
+@crm_app.route('/customers/create', methods=['POST'])
+def create_customer():
+    """新增客户（客户编号自动生成 WP + 年份 + 流水号）。"""
+    body = request.get_json(silent=True) or {}
+
+    row_data, err = _parse_customer_create_body(body)
+    if err:
+        return jsonify({'message': err}), 400
+
+    customer_no = _generate_customer_no()
+    row_data['customer_no'] = customer_no
+
+    new_id = current_app.db_manager.insert_one(CUSTOMER_TABLE, row_data)
+    return jsonify({
+        'result': {
+            'id': new_id,
+            'customer_no': customer_no,
+        }
+    })
 
 
 @crm_app.route('/update/<int:id>', methods=['PUT'])
