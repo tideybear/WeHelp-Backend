@@ -167,26 +167,28 @@ def _format_row_datetimes(row):
     return row
 
 
-def _generate_reimbursement_detail_no():
-    """明细流水号：RD + 年月日(8位) + 4位序号。"""
+def _generate_reimbursement_detail_no(namespace_id):
+    """明细流水号：空间简称 + RD + 年月日(8位) + 4位序号。"""
     date_str = datetime.now().strftime('%Y%m%d')
-    prefix = f'{REIMBURSEMENT_DETAIL_NO_PREFIX}{date_str}'
+    ns_rows = current_app.db_manager.execute_query(
+        "SELECT short_name FROM namespace WHERE id = :namespace_id LIMIT 1",
+        {'namespace_id': namespace_id},
+    )
+    ns_short = str((ns_rows[0].get('short_name') if ns_rows else '') or '').strip()
+    prefix = f'{ns_short}{REIMBURSEMENT_DETAIL_NO_PREFIX}{date_str}' if ns_short else f'{REIMBURSEMENT_DETAIL_NO_PREFIX}{date_str}'
+    prefix = prefix[:28]
     rows = current_app.db_manager.execute_query(
-        """
-        SELECT MAX(CAST(SUBSTRING(detail_no, 11, 4) AS UNSIGNED)) AS max_seq
-        FROM fin_reimbursement_detail
-        WHERE detail_no LIKE :prefix_like
-          AND CHAR_LENGTH(detail_no) = 14
-          AND (is_deleted = 0 OR is_deleted IS NULL)
-        """,
+        "SELECT detail_no FROM fin_reimbursement_detail "
+        "WHERE detail_no LIKE :prefix_like "
+        "AND (is_deleted = 0 OR is_deleted IS NULL)",
         {'prefix_like': prefix + '%'},
     )
     max_seq = 0
-    if rows and rows[0].get('max_seq') is not None:
-        try:
-            max_seq = int(rows[0]['max_seq'])
-        except (TypeError, ValueError):
-            max_seq = 0
+    for row in rows or []:
+        tail = str(row.get('detail_no') or '')[len(prefix):]
+        if not tail.isdigit():
+            continue
+        max_seq = max(max_seq, int(tail))
 
     next_seq = max_seq + 1
     if next_seq > 9999:
@@ -415,7 +417,7 @@ def create_reimbursement_detail():
     row['namespace_id'] = namespace_id
 
     try:
-        row['detail_no'] = _generate_reimbursement_detail_no()
+        row['detail_no'] = _generate_reimbursement_detail_no(namespace_id)
     except ValueError as ve:
         return jsonify({'message': str(ve)}), 400
 

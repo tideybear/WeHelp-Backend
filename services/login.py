@@ -25,7 +25,7 @@ def _verify_password(stored: str, plain: str) -> bool:
 
 def _login_payload(row: dict) -> dict:
     """构造前端 userStore 所需字段（须含 token）。"""
-    uid = row.get('id')
+    uid = row.get('user_id') if row.get('user_id') is not None else row.get('id')
     account = row.get('account') or row.get('username') or ''
     # 简易令牌：演示环境使用随机串；生产可换 JWT
     token = secrets.token_urlsafe(32)
@@ -63,7 +63,7 @@ def login():
         rows = []
         try:
             rows = current_app.db_manager.execute_query(
-                'SELECT id, account, name, password FROM `user` WHERE account = :account LIMIT 1',
+                'SELECT user_id, account, name, password FROM `user_account` WHERE account = :account LIMIT 1',
                 {'account': account},
             )
         except Exception as ex:
@@ -72,7 +72,7 @@ def login():
         if not rows:
             try:
                 rows = current_app.db_manager.execute_query(
-                    'SELECT id, username AS account, name, password FROM `user` WHERE username = :account LIMIT 1',
+                    'SELECT user_id, username AS account, name, password FROM `user_account` WHERE username = :account LIMIT 1',
                     {'account': account},
                 )
             except Exception as ex:
@@ -90,7 +90,7 @@ def login():
             return jsonify({'message': '账号或密码错误'}), 401
 
         payload = _login_payload(row)
-        logger.info('登录成功 account=%s id=%s', account, payload.get('id'))
+        logger.info('登录成功 account=%s user_id=%s', account, payload.get('user_id'))
         return jsonify({'result': payload})
     except Exception as e:
         logger.error(f'登录接口异常: {str(e)}', exc_info=True)

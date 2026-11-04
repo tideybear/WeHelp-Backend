@@ -209,10 +209,16 @@ def delete_customer(id):
     return jsonify({'result': {'id': id}})
 
 
-def _generate_customer_no():
-    """生成客户编号：WP + 年份 + 4 位流水号，如 WP20260001。"""
+def _generate_customer_no(namespace_id):
+    """生成客户编号：空间简称 + CU + 年份 + 4 位流水号，如 ABC-CU20260001。"""
     year = datetime.now().year
-    prefix = f'WP{year}'
+    rows = current_app.db_manager.execute_query(
+        "SELECT short_name FROM namespace WHERE id = :namespace_id LIMIT 1",
+        {'namespace_id': namespace_id},
+    )
+    ns_short = str((rows[0].get('short_name') if rows else '') or '').strip()
+    prefix = f'{ns_short}CU{year}' if ns_short else f'CU{year}'
+    prefix = prefix[:28]
     rows = current_app.db_manager.execute_query(
         "SELECT customer_no FROM crm_master_data WHERE customer_no LIKE :prefix_like",
         {'prefix_like': f'{prefix}%'},
@@ -306,6 +312,9 @@ def _parse_customer_create_body(body):
             raw = body.get(field)
             row_data[field] = str(raw).strip()[:10] if raw else None
 
+    # 空值不写入，交给数据库默认值（NOT NULL 列如 has_visited 写入 NULL 会报错）
+    row_data = {k: v for k, v in row_data.items() if v is not None}
+
     return row_data, None
 
 
@@ -318,7 +327,7 @@ def create_customer():
     if err:
         return jsonify({'message': err}), 400
 
-    customer_no = _generate_customer_no()
+    customer_no = _generate_customer_no(row_data['namespace_id'])
     row_data['customer_no'] = customer_no
 
     new_id = current_app.db_manager.insert_one(CUSTOMER_TABLE, row_data)
