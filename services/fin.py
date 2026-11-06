@@ -77,6 +77,33 @@ REIMBURSEMENT_DATETIME_FIELDS = (
 # 明细流水号前缀
 REIMBURSEMENT_DETAIL_NO_PREFIX = 'RD'
 
+# 发票明细表（报销明细一对多）
+INVOICE_TABLE = 'fin_invoice'
+
+# 发票可写入字段白名单
+INVOICE_WRITABLE_FIELDS = {
+    'invoice_type', 'invoice_no', 'invoice_code', 'invoice_date',
+    'invoice_amount', 'tax_rate', 'tax_amount', 'amount_without_tax',
+    'is_invoice_received', 'attachment_ids', 'remark', 'created_by', 'updated_by',
+}
+
+# 发票可更新字段白名单
+INVOICE_UPDATABLE_FIELDS = {
+    'invoice_type', 'invoice_no', 'invoice_code', 'invoice_date',
+    'invoice_amount', 'tax_rate', 'tax_amount', 'amount_without_tax',
+    'is_invoice_received', 'attachment_ids', 'remark', 'updated_by',
+}
+
+# 发票受控字段：即便前端传入也不允许更新
+INVOICE_LOCKED_FIELDS = {
+    'id', 'detail_id', 'detail_no',
+    'created_by', 'created_at', 'updated_at', 'is_deleted',
+}
+
+# 发票日期字段 / 日期时间字段
+INVOICE_DATE_FIELDS = ('invoice_date',)
+INVOICE_DATETIME_FIELDS = ('created_at', 'updated_at',)
+
 
 def _normalize_datetime(value, date_only=False):
     """把各种日期格式统一成 MySQL 可接受的格式"""
@@ -588,6 +615,300 @@ def delete_reimbursement_detail(id=None):
     if rowcount == 0:
         return jsonify({'message': '报销明细不存在或已删除'}), 404
     return jsonify({'result': {'id': id}})
+
+
+# ===================== 报销发票明细（fin_invoice） =====================
+
+def _format_invoice_row(row):
+    """把发票行里的日期时间字段格式化为字符串。"""
+    if not isinstance(row, dict):
+        return row
+    for field in INVOICE_DATE_FIELDS:
+        if field in row and row[field] is not None:
+            row[field] = _normalize_datetime(row[field], date_only=True)
+    for field in INVOICE_DATETIME_FIELDS:
+        if field in row and row[field] is not None:
+            row[field] = _normalize_datetime(row[field])
+    return row
+
+
+def _get_reimbursement_detail_by_id(detail_id):
+    """按 id 查询报销明细（不含删除），返回行或 None。"""
+    rows = current_app.db_manager.execute_query(
+        f"SELECT id, detail_no FROM {REIMBURSEMENT_TABLE} "
+        f"WHERE id = :id AND (is_deleted = 0 OR is_deleted IS NULL) LIMIT 1",
+        {'id': detail_id},
+    )
+    return rows[0] if rows else None
+
+
+def _normalize_invoice_data(data, is_create=False):
+    """校验并规范化发票数据，返回 (row, error_message)。"""
+    if not isinstance(data, dict):
+        return None, '请提供发票数据'
+
+    row = {}
+
+    invoice_type = str(data.get('invoice_type') or '').strip()
+    if invoice_type and invoice_type not in REIMBURSEMENT_INVOICE_TYPE_VALUES:
+        return None, 'invoice_type 取值不在允许范围内'
+    if invoice_type:
+        row['invoice_type'] = invoice_type
+
+    invoice_date = _parse_date_only_value(data.get('invoice_date'))
+    if data.get('invoice_date') not in (None, '') and not invoice_date:
+        return None, 'invoice_date 格式无效'
+    if invoice_date:
+        row['invoice_date'] = invoice_date
+
+    invoice_amount = data.get('invoice_amount')
+    if invoice_amount not in (None, ''):
+        amount_str = _normalize_decimal_2(invoice_amount, '')
+        if not amount_str:
+            return None, 'invoice_amount 格式无效'
+        try:
+            amount = Decimal(amount_str)
+        except (InvalidOperation, ValueError):
+            return None, 'invoice_amount 格式无效'
+        if amount < 0:
+            return None, 'invoice_amount 不能为负数'
+        row['invoice_amount'] = amount
+
+    for key in ('tax_rate', 'tax_amount', 'amount_without_tax'):
+        value = data.get(key)
+        if value in (None, ''):
+            continue
+        value_str = _normalize_decimal_2(value, '')
+        if not value_str:
+            return None, f'{key} 格式无效'
+        try:
+            decimal_value = Decimal(value_str)
+        except (InvalidOperation, ValueError):
+            return None, f'{key} 格式无效'
+        if decimal_value < 0:
+            return None, f'{key} 不能为负数'
+        row[key] = decimal_value
+
+    if 'is_invoice_received' in data:
+        flag = data.get('is_invoice_received')
+        row['is_invoice_received'] = 1 if flag in (True, 'true', '1', 1) else 0
+
+    for key in ('invoice_no', 'invoice_code', 'attachment_ids', 'remark'):
+        if key not in data:
+            continue
+        value = data.get(key)
+        if value is None or str(value).strip() == '':
+            row[key] = None
+        else:
+            row[key] = str(value).strip()
+
+    if is_create:
+        created_by = str(data.get('created_by') or '').strip()
+        if created_by:
+            row['created_by'] = created_by
+    else:
+        updated_by = str(data.get('updated_by') or '').strip()
+        if updated_by:
+            row['updated_by'] = updated_by
+
+    return row, None
+
+
+@fin_app.route('/invoices/list', methods=['GET'])
+@fin_app.route('/invoice/list', methods=['GET'])
+def list_invoices():
+    """获取某个报销明细下的发票列表"""
+    detail_id = request.args.get('detail_id')
+    if not detail_id:
+        return jsonify({'message': '缺少 detail_id'}), 400
+    try:
+        detail_id = int(detail_id)
+    except (TypeError, ValueError):
+        return jsonify({'message': 'detail_id 格式无效'}), 400
+
+    params = {'detail_id': detail_id}
+    clauses = ['detail_id = :detail_id', '(is_deleted = 0 OR is_deleted IS NULL)']
+
+    keyword = request.args.get('keyword')
+    if keyword and str(keyword).strip():
+        params['keyword'] = f"%{str(keyword).strip()}%"
+        clauses.append(
+            '(invoice_no LIKE :keyword OR invoice_code LIKE :keyword '
+            'OR detail_no LIKE :keyword)',
+        )
+
+    invoice_type = request.args.get('invoice_type')
+    if invoice_type and str(invoice_type).strip():
+        params['invoice_type'] = str(invoice_type).strip()
+        clauses.append('invoice_type = :invoice_type')
+
+    where_sql = ' AND '.join(clauses)
+    rows = current_app.db_manager.execute_query(
+        f"SELECT * FROM {INVOICE_TABLE} WHERE {where_sql} ORDER BY id DESC",
+        params,
+    )
+    safe_rows = [_json_safe_row(_format_invoice_row(row)) for row in rows]
+    return jsonify({'result': {'list': safe_rows, 'total': len(safe_rows)}})
+
+
+@fin_app.route('/invoices/detail/<int:id>', methods=['GET'])
+@fin_app.route('/invoice/detail', methods=['GET'])
+def get_invoice_detail(id=None):
+    """获取单条发票详情"""
+    if id is None:
+        record_id = request.args.get('id')
+        if not record_id:
+            return jsonify({'message': '缺少 id'}), 400
+        try:
+            id = int(record_id)
+        except (TypeError, ValueError):
+            return jsonify({'message': 'id 格式无效'}), 400
+
+    rows = current_app.db_manager.execute_query(
+        f"SELECT * FROM {INVOICE_TABLE} "
+        f"WHERE id = :id AND (is_deleted = 0 OR is_deleted IS NULL) LIMIT 1",
+        {'id': id},
+    )
+    if not rows:
+        return jsonify({'message': '发票记录不存在'}), 404
+    return jsonify({'result': _json_safe_row(_format_invoice_row(rows[0]))})
+
+
+@fin_app.route('/invoices/create', methods=['POST'])
+@fin_app.route('/invoice/create', methods=['POST'])
+def create_invoice():
+    """新增发票（关联报销明细）"""
+    data = request.get_json(silent=True) or {}
+    body = data.get('data') if isinstance(data.get('data'), dict) else data
+
+    detail_id = body.get('detail_id') or data.get('detail_id') or request.args.get('detail_id')
+    if detail_id in (None, ''):
+        return jsonify({'message': '缺少 detail_id'}), 400
+    try:
+        detail_id = int(detail_id)
+    except (TypeError, ValueError):
+        return jsonify({'message': 'detail_id 格式无效'}), 400
+
+    detail = _get_reimbursement_detail_by_id(detail_id)
+    if not detail:
+        return jsonify({'message': '报销明细不存在'}), 404
+
+    row, err = _normalize_invoice_data(body, is_create=True)
+    if err:
+        return jsonify({'message': err}), 400
+
+    row['detail_id'] = detail_id
+    row['detail_no'] = detail.get('detail_no')
+    row.setdefault('is_invoice_received', 1)
+    row['is_deleted'] = 0
+
+    try:
+        new_id = current_app.db_manager.insert_one(INVOICE_TABLE, row)
+    except Exception as exc:
+        logger.error('新增发票失败: %s', exc, exc_info=True)
+        return jsonify({'message': f'新增发票失败: {exc}'}), 500
+
+    return jsonify({'result': {'id': new_id, 'detail_id': detail_id}}), 201
+
+
+@fin_app.route('/invoices/update/<int:id>', methods=['PUT', 'POST'])
+@fin_app.route('/invoice/update', methods=['POST'])
+def update_invoice(id=None):
+    """更新发票（禁止改关联明细与流水号）"""
+    payload = request.get_json(silent=True) or {}
+    if id is None:
+        record_id = payload.get('id') or request.args.get('id')
+        if record_id in (None, ''):
+            return jsonify({'message': '缺少 id'}), 400
+        try:
+            id = int(record_id)
+        except (TypeError, ValueError):
+            return jsonify({'message': 'id 格式无效'}), 400
+
+    data = payload.get('data')
+    if not isinstance(data, dict):
+        data = {k: v for k, v in payload.items() if k not in ('id', 'detail_id')}
+
+    for key in data:
+        if key in INVOICE_LOCKED_FIELDS:
+            return jsonify({'message': f'字段 {key} 不允许更新'}), 400
+        if key not in INVOICE_UPDATABLE_FIELDS:
+            return jsonify({'message': f'字段 {key} 不允许更新'}), 400
+
+    update_data, err = _normalize_invoice_data(data, is_create=False)
+    if err:
+        return jsonify({'message': err}), 400
+    if not update_data:
+        return jsonify({'message': '没有有效字段需要更新'}), 400
+
+    exists = current_app.db_manager.execute_query(
+        f"SELECT id FROM {INVOICE_TABLE} "
+        f"WHERE id = :id AND (is_deleted = 0 OR is_deleted IS NULL) LIMIT 1",
+        {'id': id},
+    )
+    if not exists:
+        return jsonify({'message': '发票记录不存在'}), 404
+
+    set_clauses = [f'{field} = :{field}' for field in update_data]
+    params = {**update_data, 'id': id, 'updated_at': datetime.now()}
+    set_clauses.append('updated_at = :updated_at')
+
+    try:
+        affected_rows = current_app.db_manager.execute_update(
+            f"UPDATE {INVOICE_TABLE} SET {', '.join(set_clauses)} "
+            f"WHERE id = :id AND (is_deleted = 0 OR is_deleted IS NULL)",
+            params,
+        )
+    except Exception as exc:
+        logger.error('更新发票失败: %s', exc, exc_info=True)
+        return jsonify({'message': f'更新发票失败: {exc}'}), 500
+
+    if affected_rows == 0:
+        return jsonify({'message': '发票记录不存在'}), 404
+
+    return jsonify({'result': {'id': id, 'affected_rows': affected_rows}})
+
+
+@fin_app.route('/invoices/delete/<int:id>', methods=['DELETE', 'POST'])
+@fin_app.route('/invoice/delete', methods=['POST'])
+def delete_invoice(id=None):
+    """删除发票（软删除）"""
+    payload = request.get_json(silent=True) or {}
+    if id is None:
+        record_id = payload.get('id') or request.args.get('id')
+        if record_id in (None, ''):
+            return jsonify({'message': '缺少 id'}), 400
+        try:
+            id = int(record_id)
+        except (TypeError, ValueError):
+            return jsonify({'message': 'id 格式无效'}), 400
+
+    try:
+        rowcount = current_app.db_manager.execute_update(
+            f"UPDATE {INVOICE_TABLE} SET is_deleted = 1, updated_at = :updated_at "
+            f"WHERE id = :id AND (is_deleted = 0 OR is_deleted IS NULL)",
+            {'id': id, 'updated_at': datetime.now()},
+        )
+    except Exception as exc:
+        logger.error('删除发票失败: %s', exc, exc_info=True)
+        return jsonify({'message': f'删除发票失败: {exc}'}), 500
+
+    if rowcount == 0:
+        return jsonify({'message': '发票记录不存在或已删除'}), 404
+    return jsonify({'result': {'id': id}})
+
+
+@fin_app.route('/reimbursement-details/<int:id>/invoices', methods=['GET'])
+def list_invoices_by_detail(id):
+    """获取报销明细下的发票列表（路径参数写法）"""
+    rows = current_app.db_manager.execute_query(
+        f"SELECT * FROM {INVOICE_TABLE} "
+        f"WHERE detail_id = :detail_id AND (is_deleted = 0 OR is_deleted IS NULL) "
+        f"ORDER BY id DESC",
+        {'detail_id': id},
+    )
+    safe_rows = [_json_safe_row(_format_invoice_row(row)) for row in rows]
+    return jsonify({'result': {'list': safe_rows, 'total': len(safe_rows)}})
 
 
 __all__ = ['fin_app']
